@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Hygraph Localisation Checker
 
-## Getting Started
+Find missing translations across your Hygraph project **before they hit production**.
 
-First, run the development server:
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/brayan2/hygraph-localisation-checker)
+
+---
+
+## What it does
+
+Connect your Hygraph project and get an instant visual matrix showing translation coverage across every model and locale — with one-click drill-down to see exactly which entries are missing translations.
+
+- **Overview matrix** — models × locales with % completion, colour coded
+- **Drill-down** — see every untranslated entry with a direct link to Hygraph Studio
+- **CSV export** — download missing entries to assign to your content team
+- **Dark/light mode** — respects your system preference
+- **100% read-only** — credentials never leave your browser session
+
+---
+
+## Getting started
+
+### Option 1 — Deploy to Vercel (recommended)
+
+Click the button above. No environment variables needed.
+
+### Option 2 — Run locally
 
 ```bash
+git clone https://github.com/brayan2/hygraph-localisation-checker
+cd hygraph-localisation-checker
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How to connect
 
-## Learn More
+1. Go to your Hygraph project → **Settings → API Access**
+2. Copy your **Content API endpoint**
+3. Create a **Permanent Auth Token** with `READ` permission (no write access needed)
+4. Paste both into the connect form
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Privacy & security
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Credentials stored only in `sessionStorage` — cleared when you close the tab
+- All API calls go directly from your browser to Hygraph — no server intermediary
+- This tool makes only read requests
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Stack
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [Next.js](https://nextjs.org) App Router
+- [Tailwind CSS](https://tailwindcss.com) + [shadcn/ui](https://ui.shadcn.com)
+- [Lucide](https://lucide.dev) icons
+- [next-themes](https://github.com/pacocoursey/next-themes)
+
+---
+
+Built with ❤️ by [Hygraph](https://hygraph.com)
