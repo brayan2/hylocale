@@ -3,7 +3,7 @@ export interface HygraphCredentials {
   token: string
 }
 
-export type HygraphStage = 'DRAFT' | 'PUBLISHED'
+export type HygraphStage = 'DRAFT' | 'PUBLISHED' | 'BOTH'
 
 export interface HygraphLocale {
   id: string
@@ -68,6 +68,7 @@ export interface EntryListItem {
   title: string
   /** locale apiId → true if that locale exists on this entry */
   localePresentMap: Record<string, boolean>
+  stages: string[]
   studioUrl: string
 }
 

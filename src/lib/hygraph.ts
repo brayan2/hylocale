@@ -21,7 +21,6 @@ async function gql(
     body: JSON.stringify({ query, variables }),
   })
 
-  // Avoid res.json() throw if response is not JSON
   let json: any
   try {
     json = await res.json()
@@ -62,15 +61,12 @@ export async function validateCredentials(creds: HygraphCredentials): Promise<vo
 }
 
 export async function fetchLocales(creds: HygraphCredentials): Promise<HygraphLocale[]> {
-  // Two separate queries — combining introspection queries triggers 500 on some Hygraph instances
   const enumData = await gql(creds.endpoint, creds.token, `
     query { __type(name: "Locale") { enumValues { name } } }
   `)
   const values: Array<{ name: string }> = enumData?.__type?.enumValues ?? []
   if (!values.length) throw new Error('No locales found — is localisation enabled on this project?')
 
-  // Detect true default locale via content query — querying without a locales arg
-  // returns entries in the default locale, so the returned locale field is authoritative
   let defaultApiId = values[0]?.name
   try {
     const assetData = await gql(creds.endpoint, creds.token, `
@@ -78,7 +74,7 @@ export async function fetchLocales(creds: HygraphCredentials): Promise<HygraphLo
     `)
     const detected = (assetData.entries?.[0] as { locale?: string } | undefined)?.locale
     if (detected && values.some(v => v.name === detected)) defaultApiId = detected
-  } catch { /* fallback to first enum value */ }
+  } catch { /* fallback */ }
 
   return values.map(v => ({
     id: v.name,
@@ -143,17 +139,17 @@ export async function fetchTotalCount(
   defaultLocale: string,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<number> {
+  const s = stage === 'PUBLISHED' ? 'PUBLISHED' : 'DRAFT'
   try {
     const data = await gql(creds.endpoint, creds.token, `
       query TotalCount {
-        result: ${modelApiId}Connection(stage: ${stage}) {
+        result: ${modelApiId}Connection(stage: ${s}) {
           aggregate { count }
         }
       }
     `)
     return data.result?.aggregate?.count ?? 0
-  } catch (err) {
-    // Fallback
+  } catch {
     let total = 0
     let skip = 0
     const PAGE = 1000
@@ -161,17 +157,15 @@ export async function fetchTotalCount(
       try {
         const data = await gql(creds.endpoint, creds.token, `
           query CountFallback($skip: Int!) {
-            entries: ${modelApiId}(stage: ${stage}, locales: [${defaultLocale}], first: ${PAGE}, skip: $skip) { id }
+            entries: ${modelApiId}(stage: ${s}, locales: [${defaultLocale}], first: ${PAGE}, skip: $skip) { id }
           }
         `, { skip })
         const count = (data.entries as Array<unknown>)?.length ?? 0
         total += count
         if (count < PAGE) break
         skip += PAGE
-        if (skip > 10000) break 
-      } catch {
-        break
-      }
+        if (skip > 10000) break
+      } catch { break }
     }
     return total
   }
@@ -184,31 +178,26 @@ export async function fetchLocalisationCounts(
   total: number,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<Record<string, number>> {
-  try {
-    return await countViaWhere(creds, modelApiId, locales, stage)
-  } catch {
-    return await countViaScan(creds, modelApiId, locales, total, stage)
+  if (stage === 'BOTH') {
+    const [draft, pub] = await Promise.all([
+      fetchLocalisationCounts(creds, modelApiId, locales, total, 'DRAFT'),
+      fetchLocalisationCounts(creds, modelApiId, locales, total, 'PUBLISHED'),
+    ])
+    const combined: Record<string, number> = {}
+    for (const l of locales) combined[l] = Math.min(draft[l] ?? 0, pub[l] ?? 0)
+    return combined
   }
-}
-
-async function countViaWhere(
-  creds: HygraphCredentials,
-  modelApiId: string,
-  locales: string[],
-  stage: HygraphStage,
-): Promise<Record<string, number>> {
-  const aliases = locales
-    .map(
-      (l, i) => `l${i}: ${modelApiId}Connection(stage: ${stage}, where: { localizations_some: { locale: ${l} } }) {
-        aggregate { count }
-      }`,
-    )
-    .join('\n')
-
-  const data = await gql(creds.endpoint, creds.token, `query LocalisationCounts { ${aliases} }`)
-  const counts: Record<string, number> = {}
-  for (let i = 0; i < locales.length; i++) counts[locales[i]] = data[`l${i}`]?.aggregate?.count ?? 0
-  return counts
+  try {
+    const aliases = locales
+      .map((l, i) => `l${i}: ${modelApiId}Connection(stage: ${stage}, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`)
+      .join('\n')
+    const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
+    const counts: Record<string, number> = {}
+    for (let i = 0; i < locales.length; i++) counts[locales[i]] = data[`l${i}`]?.aggregate?.count ?? 0
+    return counts
+  } catch {
+    return await countViaScan(creds, modelApiId, locales, total, stage as any)
+  }
 }
 
 async function countViaScan(
@@ -216,20 +205,16 @@ async function countViaScan(
   modelApiId: string,
   locales: string[],
   total: number,
-  stage: HygraphStage,
+  stage: 'DRAFT' | 'PUBLISHED',
 ): Promise<Record<string, number>> {
   const counts: Record<string, number> = Object.fromEntries(locales.map(l => [l, 0]))
   const PAGE = 500
   let skip = 0
-
   while (skip < total) {
     const aliases = locales
       .map((l, i) => `l${i}: ${modelApiId}(stage: ${stage}, locales: [${l}], first: $first, skip: $skip) { locale }`)
       .join('\n')
-    const vars = { first: PAGE, skip }
-    const query = `query ScanBatch($first: Int!, $skip: Int!) { ${aliases} }`
-    const data = await gql(creds.endpoint, creds.token, query, vars)
-
+    const data = await gql(creds.endpoint, creds.token, `query Scan($first: Int!, $skip: Int!) { ${aliases} }`, { first: PAGE, skip })
     let anyFull = false
     for (let i = 0; i < locales.length; i++) {
       const entries = (data[`l${i}`] as Array<{ locale: string }>) ?? []
@@ -249,69 +234,14 @@ async function fetchTitleField(creds: HygraphCredentials, modelType: string): Pr
         fields { name type { kind name ofType { kind name } } }
       } }
     `)
-    const fields: Array<{ name: string; type: { name?: string; ofType?: { name?: string } } }> =
-      data.__type?.fields ?? []
+    const fields = (data.__type?.fields ?? []) as any[]
     for (const c of ['title', 'name', 'headline', 'label', 'slug', 'displayName']) {
       const f = fields.find(x => x.name === c)
-      if (f && (f.type.name === 'String' || f.type.ofType?.name === 'String')) return c
+      if (f && (unwrapType(f.type) === 'String')) return c
     }
   } catch { /* ignore */ }
   return null
 }
-
-export async function fetchMissingForLocale(
-  creds: HygraphCredentials,
-  modelApiId: string,
-  modelType: string,
-  locale: string,
-  defaultLocale: string,
-  onProgress?: (n: number) => void,
-): Promise<MissingEntry[]> {
-  const PAGE = 100
-  const missing: MissingEntry[] = []
-  let skip = 0
-  let hasMore = true
-  const projectId = extractProjectId(creds.endpoint)
-  const titleField = await fetchTitleField(creds, modelType)
-
-  while (hasMore) {
-    try {
-      const data = await gql(creds.endpoint, creds.token, `
-        query MissingForLocale($first: Int!, $skip: Int!) {
-          entries: ${modelApiId}(stage: DRAFT, locales: [${defaultLocale}, ${locale}], first: $first, skip: $skip) {
-            id
-            ${titleField ?? ''}
-            localizations(locales: [${locale}, ${defaultLocale}]) { locale }
-          }
-        }
-      `, { first: PAGE, skip })
-      const entries: Array<{
-        id: string; localizations: Array<{ locale: string }>; [k: string]: unknown
-      }> = data.entries ?? []
-
-      for (const e of entries) {
-        if (!e.localizations.some(l => l.locale === locale)) {
-          missing.push({
-            id: e.id,
-            title: titleField ? String(e[titleField] ?? '') || e.id : e.id,
-            missingLocales: [locale],
-            studioUrl: projectId
-              ? `https://app.hygraph.com/${projectId}/master/content/${modelType}/view/${e.id}`
-              : '#',
-          })
-        }
-      }
-      onProgress?.(skip + entries.length)
-      hasMore = entries.length === PAGE
-      skip += PAGE
-    } catch {
-      hasMore = false
-    }
-  }
-  return missing
-}
-
-// ─── Hierarchical drill-down ──────────────────────────────────────────────────
 
 export async function fetchEntryList(
   creds: HygraphCredentials,
@@ -323,34 +253,34 @@ export async function fetchEntryList(
   skip: number,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<{ entries: EntryListItem[]; total: number }> {
+  const s = stage === 'PUBLISHED' ? 'PUBLISHED' : 'DRAFT'
   const titleField = await fetchTitleField(creds, modelType)
   const allLocaleIds = locales.map(l => l.apiId).join(', ')
   const projectId = extractProjectId(creds.endpoint)
   const data = await gql(creds.endpoint, creds.token, `
     query EntryList($first: Int!, $skip: Int!) {
-      entries: ${modelApiId}(stage: ${stage}, locales: [${defaultLocale}, ${allLocaleIds}], first: $first, skip: $skip) {
+      entries: ${modelApiId}(stage: ${s}, locales: [${defaultLocale}, ${allLocaleIds}], first: $first, skip: $skip) {
         id
         ${titleField ?? ''}
+        documentInStages { stage }
         localizations(locales: [${allLocaleIds}]) { locale }
       }
     }
   `, { first, skip })
 
   return {
-    entries: ((data.entries ?? []) as Array<Record<string, unknown>>).map(e => {
-      const presentLocales = new Set(
-        (e.localizations as Array<{ locale: string }>).map(l => l.locale),
-      )
-      return {
-        id: e.id as string,
-        title: titleField ? String(e[titleField] ?? '') || (e.id as string) : (e.id as string),
-        localePresentMap: Object.fromEntries(locales.map(l => [l.apiId, presentLocales.has(l.apiId)])),
-        studioUrl: projectId
-          ? `https://app.hygraph.com/${projectId}/master/content/${modelType}/view/${e.id}`
-          : '#',
-      }
-    }),
-    total: 0, // Total is handled separately by the dashboard calling fetchTotalCount
+    entries: ((data.entries ?? []) as any[]).map(e => ({
+      id: e.id,
+      title: titleField ? String(e[titleField] ?? '') || e.id : e.id,
+      localePresentMap: Object.fromEntries(
+        (e.localizations as any[]).map(loc => [loc.locale, true]),
+      ),
+      stages: (e.documentInStages as any[]).map(s => s.stage),
+      studioUrl: projectId
+        ? `https://app.hygraph.com/projects/${projectId}/master/content/${modelType}/view/${modelApiId}/${e.id}`
+        : '#',
+    })),
+    total: 0,
   }
 }
 
@@ -358,23 +288,14 @@ export async function fetchLocalizableFields(
   creds: HygraphCredentials,
   modelType: string,
 ): Promise<Array<{ name: string; typeName: string; isRichText: boolean }>> {
-  // Hygraph exposes exactly the localizable fields via the ${ModelType}Locale type
   const data = await gql(creds.endpoint, creds.token, `
-    query {
-      localeType: __type(name: "${modelType}Locale") {
-        fields { name type { kind name ofType { kind name ofType { kind name } } } }
-      }
-    }
+    query { __type(name: "${modelType}") { fields { name isLocalized type { kind name ofType { kind name } } } } }
   `)
-
-  const fields: Array<{ name: string; type: { kind: string; name?: string; ofType?: unknown } }> =
-    data.localeType?.fields ?? []
-
-  return fields
-    .filter(f => !SYSTEM_FIELDS.has(f.name))
+  return ((data?.__type?.fields ?? []) as any[])
+    .filter(f => !SYSTEM_FIELDS.has(f.name) && f.isLocalized)
     .map(f => {
-      const typeName = unwrapType(f.type) ?? f.type.name ?? 'String'
-      return { name: f.name, typeName, isRichText: typeName.includes('RichText') }
+      const typeName = unwrapType(f.type) ?? ''
+      return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' }
     })
 }
 
@@ -387,6 +308,7 @@ export async function fetchEntryFieldCoverage(
   targetLocale: string,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<EntryFieldCoverage> {
+  const s = stage === 'PUBLISHED' ? 'PUBLISHED' : 'DRAFT'
   const [localizableFields, titleField] = await Promise.all([
     fetchLocalizableFields(creds, modelType),
     fetchTitleField(creds, modelType),
@@ -394,21 +316,15 @@ export async function fetchEntryFieldCoverage(
 
   const isSameLocale = defaultLocale === targetLocale
   const localesToFetch = isSameLocale ? [defaultLocale] : [defaultLocale, targetLocale]
-
   const fieldSelections = localizableFields
-    .map(f => (f.isRichText ? `${f.name} { text }` : f.name))
+    .map(f => (f.isRichText ? `${f.name} { text html json }` : f.name))
     .join('\n')
 
   let entry: Record<string, unknown> | null = null
-
-  if (fieldSelections) {
+  if (localizableFields.length > 0) {
     const data = await gql(creds.endpoint, creds.token, `
-      query EntryFieldCoverage($id: ID!) {
-        entries: ${modelApiId}(
-          stage: ${stage},
-          locales: [${localesToFetch.join(', ')}],
-          where: { id: $id }
-        ) {
+      query EntryFields($id: ID!) {
+        entries: ${modelApiId}(stage: ${s}, locales: [${localesToFetch.join(', ')}], where: { id: $id }) {
           id
           ${titleField ?? ''}
           localizations(locales: [${localesToFetch.join(', ')}]) {
@@ -418,19 +334,22 @@ export async function fetchEntryFieldCoverage(
         }
       }
     `, { id: entryId })
-    entry = ((data.entries as Array<Record<string, unknown>>) ?? [])[0] ?? null
+    entry = (data.entries as any[])?.[0] ?? null
   }
 
-  if (!entry) throw new Error('Entry not found')
+  if (!entry) throw new Error('Entry not found in selected stage')
 
   function stringify(v: unknown): string | null {
     if (v === null || v === undefined) return null
-    if (typeof v === 'object') return (v as { text?: string }).text ?? null
+    if (typeof v === 'object') {
+      const obj = v as any
+      return obj.text || obj.html || (obj.json ? JSON.stringify(obj.json) : null) || null
+    }
     const s = String(v)
     return s === '' ? null : s
   }
 
-  const locs = (entry.localizations as Array<Record<string, unknown>>) ?? []
+  const locs = (entry.localizations as any[]) ?? []
   const defaultLoc = locs.find(l => l.locale === defaultLocale) ?? {}
   const targetLoc = locs.find(l => l.locale === targetLocale) ?? null
 
@@ -464,104 +383,21 @@ export async function fetchLocalizationStageHealth(
   modelApiId: string,
   locales: string[],
 ): Promise<{ locale: string; published: number; draftOnly: number }[] | null> {
-  if (!locales.length) return []
-
   try {
     const aliases = locales.flatMap((l, i) => [
       `d${i}: ${modelApiId}Connection(where: { stage: DRAFT, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
       `p${i}: ${modelApiId}Connection(where: { stage: PUBLISHED, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
     ]).join('\n')
-    const data = await gql(creds.endpoint, creds.token, `query StageHealth { ${aliases} }`)
+    const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
     return locales.map((l, i) => {
       const draft = data[`d${i}`]?.aggregate?.count ?? 0
       const published = data[`p${i}`]?.aggregate?.count ?? 0
       return { locale: l, published, draftOnly: Math.max(0, draft - published) }
     })
-  } catch { /* fall through */ }
+  } catch { return null }
+}
 
-  try {
-    const PAGE = 500
-    const counts: Record<string, { draft: number; published: number }> =
-      Object.fromEntries(locales.map(l => [l, { draft: 0, published: 0 }]))
-    let skip = 0
-    let hasMore = true
-
-    while (hasMore) {
-      const data = await gql(creds.endpoint, creds.token, `
-        query {
-          entries: ${modelApiId}(first: ${PAGE}, skip: ${skip}) {
-            id
-            localizations(stages: [DRAFT, PUBLISHED]) { locale stage }
-          }
-        }
-      `)
-      const entries: Array<{ id: string; localizations: Array<{ locale: string; stage: string }> }> =
-        data.entries ?? []
-
-      for (const entry of entries) {
-        for (const l of locales) {
-          const locs = entry.localizations.filter(loc => loc.locale === l)
-          if (locs.some(loc => loc.stage === 'DRAFT'))     counts[l].draft++
-          if (locs.some(loc => loc.stage === 'PUBLISHED')) counts[l].published++
-        }
-      }
-
-      hasMore = entries.length === PAGE
-      skip += PAGE
-    }
-
-    return locales.map(l => ({
-      locale: l,
-      published: counts[l].published,
-      draftOnly: Math.max(0, counts[l].draft - counts[l].published),
-    }))
-  } catch { /* fall through */ }
-
-  try {
-    const localeFields = locales
-      .map((l, i) => `loc${i}: localizations(locales: [${l}]) { locale }`)
-      .join('\n')
-
-    async function scanStage(stage: 'DRAFT' | 'PUBLISHED'): Promise<Record<string, number>> {
-      const c: Record<string, number> = Object.fromEntries(locales.map(l => [l, 0]))
-      const PAGE = 500
-      let skip = 0
-      let hasMore = true
-      while (hasMore) {
-        const data = await gql(creds.endpoint, creds.token, `
-          query {
-            entries: ${modelApiId}(stage: ${stage}, first: ${PAGE}, skip: ${skip}) {
-              id
-              ${localeFields}
-            }
-          }
-        `)
-        const entries: Array<Record<string, unknown>> = data.entries ?? []
-        for (const entry of entries) {
-          for (let i = 0; i < locales.length; i++) {
-            if (((entry[`loc${i}`] as Array<unknown>) ?? []).length > 0) c[locales[i]]++
-          }
-        }
-        hasMore = entries.length === PAGE
-        skip += PAGE
-      }
-      return c
-    }
-
-    const [draftCounts, publishedCounts] = await Promise.all([
-      scanStage('DRAFT'),
-      scanStage('PUBLISHED'),
-    ])
-
-    const hasDiff = locales.some(l => (draftCounts[l] ?? 0) !== (publishedCounts[l] ?? 0))
-    if (!hasDiff && locales.some(l => (publishedCounts[l] ?? 0) > 0)) return null
-
-    return locales.map(l => ({
-      locale: l,
-      published: publishedCounts[l] ?? 0,
-      draftOnly: Math.max(0, (draftCounts[l] ?? 0) - (publishedCounts[l] ?? 0)),
-    }))
-  } catch {
-    return null
-  }
+export async function fetchMissingForLocale() {
+  // Deprecated in favor of hierarchical drill-down
+  return []
 }

@@ -428,6 +428,24 @@ function DashboardContent({
 
   useEffect(() => { load() }, [load])
 
+  if (error) {
+    const isPermissionError = error.includes('Unauthorized') || error.includes('not have access')
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+        <AlertCircle className="w-10 h-10 text-destructive" />
+        <p className="font-semibold">{isPermissionError ? 'Permission Denied' : 'Failed to load dashboard'}</p>
+        <p className="text-sm text-muted-foreground max-w-md">
+          {isPermissionError
+            ? `Your API token may not have access to the "${stage}" stage. Make sure your Permanent Auth Token has "Content API" read permissions for both DRAFT and PUBLISHED stages in Hygraph Settings.`
+            : error}
+        </p>
+        <Button onClick={load} variant="outline" className="gap-2">
+          <RefreshCw className="w-4 h-4" /> Try again
+        </Button>
+      </div>
+    )
+  }
+
   if (view.kind === 'entries') {
     return (
       <EntryListView
@@ -503,7 +521,7 @@ function DashboardContent({
         </div>
         <div className="flex items-center gap-3">
           <div className="flex bg-muted p-1 rounded-lg">
-            {(['PUBLISHED', 'DRAFT'] as HygraphStage[]).map((s) => (
+            {(['PUBLISHED', 'DRAFT', 'BOTH'] as HygraphStage[]).map((s) => (
               <button
                 key={s}
                 onClick={() => setStage(s)}
@@ -514,7 +532,7 @@ function DashboardContent({
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                {s === 'PUBLISHED' ? 'Published' : 'Draft (Both)'}
+                {s === 'PUBLISHED' ? 'Published' : s === 'DRAFT' ? 'Draft' : 'All/Both'}
               </button>
             ))}
           </div>
@@ -807,7 +825,17 @@ function EntryListView({
                       }}
                     >
                       <td className="px-4 py-3 sticky left-0 bg-background">
-                        <p className="font-medium truncate max-w-[220px]">{entry.title || '(Untitled)'}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium truncate max-w-[220px]">{entry.title || '(Untitled)'}</p>
+                          <div className="flex gap-1 shrink-0">
+                            {entry.stages.includes('PUBLISHED') && (
+                              <span className="w-4 h-4 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold flex items-center justify-center border border-emerald-500/20" title="Published">P</span>
+                            )}
+                            {entry.stages.includes('DRAFT') && (
+                              <span className="w-4 h-4 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold flex items-center justify-center border border-amber-500/20" title="Draft">D</span>
+                            )}
+                          </div>
+                        </div>
                         <p className="text-[11px] text-muted-foreground font-mono mt-0.5 truncate">{entry.id}</p>
                       </td>
                       {defaultLocaleObj && (
