@@ -139,13 +139,27 @@ export async function fetchTotalCount(
   defaultLocale: string,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<number> {
-  // If stage is DRAFT, we want "Draft Only". 
-  // We'll calculate it in the dashboard, but here we return DRAFT count
-  const s = stage === 'PUBLISHED' ? 'PUBLISHED' : 'DRAFT'
+  if (stage === 'BOTH') return await fetchTotalCountRaw(creds, modelApiId, defaultLocale, 'DRAFT')
+  if (stage === 'PUBLISHED') return await fetchTotalCountRaw(creds, modelApiId, defaultLocale, 'PUBLISHED')
+
+  // DRAFT stage = Draft Only
+  const [draft, pub] = await Promise.all([
+    fetchTotalCountRaw(creds, modelApiId, defaultLocale, 'DRAFT'),
+    fetchTotalCountRaw(creds, modelApiId, defaultLocale, 'PUBLISHED'),
+  ])
+  return Math.max(0, draft - pub)
+}
+
+async function fetchTotalCountRaw(
+  creds: HygraphCredentials,
+  modelApiId: string,
+  defaultLocale: string,
+  stage: 'DRAFT' | 'PUBLISHED',
+): Promise<number> {
   try {
     const data = await gql(creds.endpoint, creds.token, `
       query TotalCount {
-        result: ${modelApiId}Connection(stage: ${s}) {
+        result: ${modelApiId}Connection(stage: ${stage}) {
           aggregate { count }
         }
       }
@@ -159,7 +173,7 @@ export async function fetchTotalCount(
       try {
         const data = await gql(creds.endpoint, creds.token, `
           query CountFallback($skip: Int!) {
-            entries: ${modelApiId}(stage: ${s}, locales: [${defaultLocale}], first: ${PAGE}, skip: $skip) { id }
+            entries: ${modelApiId}(stage: ${stage}, locales: [${defaultLocale}], first: ${PAGE}, skip: $skip) { id }
           }
         `, { skip })
         const count = (data.entries as Array<unknown>)?.length ?? 0
