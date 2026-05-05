@@ -49,22 +49,22 @@ export async function validateCredentials(creds: HygraphCredentials): Promise<vo
 }
 
 export async function fetchLocales(creds: HygraphCredentials): Promise<HygraphLocale[]> {
-  // Fetch enum values and schema query args in one round-trip
-  const data = await gql(creds.endpoint, creds.token, `
-    query {
-      __type(name: "Locale") { enumValues { name } }
-      __schema { queryType { fields { name args { name defaultValue } } } }
-    }
+  // Two separate queries — combining introspection queries triggers 500 on some Hygraph instances
+  const enumData = await gql(creds.endpoint, creds.token, `
+    query { __type(name: "Locale") { enumValues { name } } }
   `)
-  const values: Array<{ name: string }> = data?.__type?.enumValues ?? []
+  const values: Array<{ name: string }> = enumData?.__type?.enumValues ?? []
   if (!values.length) throw new Error('No locales found — is localisation enabled on this project?')
 
-  // Read the actual default locale from the schema: the 'locales' arg on any
-  // localized query field has a defaultValue like "[en]" or "[en_US]"
+  // Detect true default locale from schema: the 'locales' arg on any localized
+  // query field carries a defaultValue like "[en]" or "[en_US]"
   let defaultApiId = values[0]?.name
   try {
+    const schemaData = await gql(creds.endpoint, creds.token, `
+      query { __schema { queryType { fields { name args { name defaultValue } } } } }
+    `)
     const fields: Array<{ args: Array<{ name: string; defaultValue: string | null }> }> =
-      data.__schema?.queryType?.fields ?? []
+      schemaData.__schema?.queryType?.fields ?? []
     outer: for (const f of fields) {
       for (const a of f.args) {
         if (a.name === 'locales' && a.defaultValue) {

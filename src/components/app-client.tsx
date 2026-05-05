@@ -74,19 +74,44 @@ function StatusDot({ pct }: { pct: number }) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
+const STORAGE_KEY = 'hylocale-creds'
+
 export function AppClient() {
   const [creds, setCreds] = useState<HygraphCredentials | null>(null)
   const [defaultLocale, setDefaultLocale] = useState('en')
   const [activeTab, setActiveTab] = useState<Tab>('coverage')
 
+  // Restore saved credentials on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (!saved) return
+      const { endpoint, token } = JSON.parse(saved) as HygraphCredentials
+      if (!endpoint || !token) return
+      const c = { endpoint, token }
+      validateCredentials(c)
+        .then(() => fetchLocales(c))
+        .then(locales => {
+          const dl = locales.find(l => l.isDefault)?.apiId ?? locales[0]?.apiId ?? 'en'
+          setCreds(c)
+          setDefaultLocale(dl)
+        })
+        .catch(() => localStorage.removeItem(STORAGE_KEY))
+    } catch {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }, [])
+
   function handleConnected(c: HygraphCredentials, dl: string) {
     setCreds(c)
     setDefaultLocale(dl)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(c))
   }
 
   function handleDisconnect() {
     setCreds(null)
     setActiveTab('coverage')
+    localStorage.removeItem(STORAGE_KEY)
   }
 
   const tabs: { id: Tab; label: string; Icon: React.ElementType }[] = [
@@ -299,7 +324,7 @@ function ConnectBar({
           </p>
         ) : (
           <p className="text-[11px] text-muted-foreground">
-            Project Settings → API Access → Endpoints · Credentials stay in memory only, never stored
+            Project Settings → API Access → Endpoints · Saved in your browser, never sent to any server
           </p>
         )}
       </div>
