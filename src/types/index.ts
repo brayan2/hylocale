@@ -55,9 +55,16 @@ export interface StageHealthCount {
   draftOnly: number
 }
 
+export interface FieldHealthResult {
+  fieldName: string
+  status: 'ok' | 'error'
+  error?: string
+}
+
 export interface ModelStageHealth {
   model: HygraphModel
   counts: StageHealthCount[] | null
+  fieldHealth: FieldHealthResult[] | null
   status: 'loading' | 'done' | 'error'
 }
 

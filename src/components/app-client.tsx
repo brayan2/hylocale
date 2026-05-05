@@ -16,6 +16,7 @@ import {
   fetchLocalizationStageHealth,
   fetchEntryList,
   fetchEntryFieldCoverage,
+  fetchFieldHealth,
 } from '@/lib/hygraph'
 import type {
   HygraphCredentials,
@@ -44,6 +45,7 @@ import {
   LogOut,
   RefreshCw,
   Search,
+  ShieldAlert,
   Stethoscope,
   XCircle,
 } from 'lucide-react'
@@ -1152,14 +1154,17 @@ function DiagnosticsContent({
       setLocales(locs)
       const nonDefault = locs.filter(l => !l.isDefault).map(l => l.apiId)
 
-      setHealthData(models.map(m => ({ model: m, counts: null, status: 'loading' })))
+      setHealthData(models.map(m => ({ model: m, counts: null, fieldHealth: null, status: 'loading' })))
       setBooting(false)
 
       for (const model of models) {
         try {
-          const counts = await fetchLocalizationStageHealth(creds, model.apiId, nonDefault)
+          const [counts, fieldHealth] = await Promise.all([
+            fetchLocalizationStageHealth(creds, model.apiId, nonDefault),
+            fetchFieldHealth(creds, model.apiId, model.id, _defaultLocale),
+          ])
           setHealthData(prev => prev.map(d =>
-            d.model.id !== model.id ? d : { ...d, counts, status: 'done' },
+            d.model.id !== model.id ? d : { ...d, counts, fieldHealth, status: 'done' },
           ))
         } catch {
           setHealthData(prev => prev.map(d =>
@@ -1206,9 +1211,20 @@ function DiagnosticsContent({
         <div className="flex items-center gap-2">
           {!booting && !allUnsupported && totalUnpublished > 0 && (
             <Badge className="bg-amber-400/15 text-amber-700 dark:text-amber-400 font-semibold border-0">
+              <AlertTriangle className="w-3 h-3 mr-1" />
               {totalUnpublished} unpublished
             </Badge>
           )}
+          {(() => {
+            const schemaErrors = healthData.flatMap(d => d.fieldHealth ?? []).filter(fh => fh.status === 'error').length
+            if (schemaErrors > 0) return (
+              <Badge className="bg-destructive/10 text-destructive font-semibold border-0">
+                <ShieldAlert className="w-3 h-3 mr-1" />
+                {schemaErrors} schema error{schemaErrors !== 1 ? 's' : ''}
+              </Badge>
+            )
+            return null
+          })()}
           {!booting && !allUnsupported && totalUnpublished === 0 && doneRows.length > 0 && (
             <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-semibold border-0">
               All published
@@ -1342,32 +1358,57 @@ function DiagnosticsContent({
                           </td>
                         )
 
+                      const fieldErrors = row.fieldHealth?.filter(fh => fh.status === 'error') ?? []
                       const count = row.counts.find(c => c.locale === locale.apiId)
                       const draftOnly = count?.draftOnly ?? 0
                       const published = count?.published ?? 0
 
                       return (
                         <td key={locale.apiId} className="px-3 py-3 text-center">
-                          {draftOnly > 0 ? (
-                            <Tooltip>
-                              <TooltipTrigger>
-                                <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-amber-400/15 text-amber-700 dark:text-amber-400 cursor-default">
-                                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                                  {draftOnly} unpublished
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" className="text-xs max-w-72">
-                                {draftOnly} {locale.displayName} translation{draftOnly !== 1 ? 's' : ''} exist in Draft
-                                but {draftOnly !== 1 ? 'have' : 'has'} not been published. These entries return{' '}
-                                <code>null</code> via the Content API. Open them in Studio and click Publish.
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                              {published} published
-                            </span>
-                          )}
+                          <div className="flex flex-col gap-1.5 items-center">
+                            {fieldErrors.length > 0 ? (
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-destructive/10 text-destructive cursor-default border border-destructive/20">
+                                    <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                                    {fieldErrors.length} Schema Issue{fieldErrors.length !== 1 ? 's' : ''}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs max-w-72 bg-background border-border shadow-lg">
+                                  <p className="font-bold mb-1">Mapping Errors:</p>
+                                  <ul className="list-disc pl-4 space-y-1">
+                                    {fieldErrors.map((fh, i) => (
+                                      <li key={i}>
+                                        <span className="font-mono">{fh.fieldName}</span>: {fh.error}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : null}
+
+                            {draftOnly > 0 ? (
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-amber-400/15 text-amber-700 dark:text-amber-400 cursor-default">
+                                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                    {draftOnly} unpublished
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs max-w-72">
+                                  {draftOnly} {locale.displayName} translation{draftOnly !== 1 ? 's' : ''} exist in Draft
+                                  but {draftOnly !== 1 ? 'have' : 'has'} not been published.
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : published > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                {published} published
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </div>
                         </td>
                       )
                     })}

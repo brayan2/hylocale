@@ -460,10 +460,11 @@ export async function fetchLocalizationStageHealth(
   modelApiId: string,
   locales: string[],
 ): Promise<{ locale: string; published: number; draftOnly: number }[] | null> {
+  // Strategy 1: Connection Aggregate (Fastest)
   try {
     const aliases = locales.flatMap((l, i) => [
-      `d${i}: ${modelApiId}Connection(where: { stage: DRAFT, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
-      `p${i}: ${modelApiId}Connection(where: { stage: PUBLISHED, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+      `d${i}: ${modelApiId}Connection(stage: DRAFT, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+      `p${i}: ${modelApiId}Connection(stage: PUBLISHED, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
     ]).join('\n')
     const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
     return locales.map((l, i) => {
@@ -471,7 +472,71 @@ export async function fetchLocalizationStageHealth(
       const published = data[`p${i}`]?.aggregate?.count ?? 0
       return { locale: l, published, draftOnly: Math.max(0, draft - published) }
     })
+  } catch { /* Fallback to Strategy 2 */ }
+
+  // Strategy 2: Iterative scanning (Resilient but slower)
+  try {
+    const PAGE = 100
+    const counts = Object.fromEntries(locales.map(l => [l, { d: 0, p: 0 }]))
+    let skip = 0
+    let hasMore = true
+    while (hasMore) {
+      const data = await gql(creds.endpoint, creds.token, `
+        query {
+          entries: ${modelApiId}(stage: DRAFT, first: ${PAGE}, skip: ${skip}) {
+            id
+            documentInStages { stage }
+            localizations { locale stage }
+          }
+        }
+      `)
+      const entries = (data.entries ?? []) as any[]
+      for (const e of entries) {
+        for (const l of locales) {
+          const locs = (e.localizations as any[]).filter(loc => loc.locale === l)
+          if (locs.some(loc => loc.stage === 'DRAFT')) counts[l].d++
+          if (locs.some(loc => loc.stage === 'PUBLISHED')) counts[l].p++
+        }
+      }
+      hasMore = entries.length === PAGE
+      skip += PAGE
+      if (skip > 1000) break // Safety cap for scan
+    }
+    return locales.map(l => ({
+      locale: l,
+      published: counts[l].p,
+      draftOnly: Math.max(0, counts[l].d - counts[l].p),
+    }))
   } catch { return null }
+}
+
+export async function fetchFieldHealth(
+  creds: HygraphCredentials,
+  modelApiId: string,
+  modelType: string,
+  defaultLocale: string,
+): Promise<{ fieldName: string; status: 'ok' | 'error'; error?: string }[]> {
+  const fields = await fetchLocalizableFields(creds, modelType)
+  const results: { fieldName: string; status: 'ok' | 'error'; error?: string }[] = []
+
+  for (const f of fields) {
+    try {
+      const sel = f.isRichText
+        ? (f.typeName === 'RichText' ? `${f.name} { text }` : (f.typeName === 'Json' ? f.name : `${f.name} { id }`))
+        : f.name
+      
+      // Try to query a single entry with this specific field
+      await gql(creds.endpoint, creds.token, `
+        query TestField($locs: [Locale!]!) {
+          entries: ${modelApiId}(stage: DRAFT, locales: $locs, first: 1) { ${sel} }
+        }
+      `, { locs: [defaultLocale] })
+      results.push({ fieldName: f.name, status: 'ok' })
+    } catch (err) {
+      results.push({ fieldName: f.name, status: 'error', error: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+  return results
 }
 
 export async function fetchMissingForLocale() {
