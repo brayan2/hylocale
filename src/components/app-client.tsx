@@ -532,7 +532,7 @@ function DashboardContent({
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                {s === 'PUBLISHED' ? 'Published' : s === 'DRAFT' ? 'Draft' : 'All/Both'}
+                {s === 'PUBLISHED' ? 'Published' : s === 'DRAFT' ? 'Draft Only' : 'All (Both)'}
               </button>
             ))}
           </div>
@@ -831,8 +831,11 @@ function EntryListView({
                             {entry.stages.includes('PUBLISHED') && (
                               <span className="w-4 h-4 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold flex items-center justify-center border border-emerald-500/20" title="Published">P</span>
                             )}
-                            {entry.stages.includes('DRAFT') && (
-                              <span className="w-4 h-4 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold flex items-center justify-center border border-amber-500/20" title="Draft">D</span>
+                            {entry.stages.includes('DRAFT') && !entry.stages.includes('PUBLISHED') && (
+                              <span className="w-4 h-4 rounded bg-amber-400/20 text-amber-700 dark:text-amber-400 text-[10px] font-bold flex items-center justify-center border border-amber-400/30" title="Draft Only">D</span>
+                            )}
+                            {entry.stages.includes('DRAFT') && entry.stages.includes('PUBLISHED') && (
+                              <span className="w-4 h-4 rounded bg-amber-400/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold flex items-center justify-center border border-amber-400/20" title="Draft">D</span>
                             )}
                           </div>
                         </div>

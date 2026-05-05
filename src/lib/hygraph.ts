@@ -179,14 +179,29 @@ export async function fetchLocalisationCounts(
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<Record<string, number>> {
   if (stage === 'BOTH') {
-    const [draft, pub] = await Promise.all([
-      fetchLocalisationCounts(creds, modelApiId, locales, total, 'DRAFT'),
-      fetchLocalisationCounts(creds, modelApiId, locales, total, 'PUBLISHED'),
-    ])
-    const combined: Record<string, number> = {}
-    for (const l of locales) combined[l] = Math.min(draft[l] ?? 0, pub[l] ?? 0)
-    return combined
+    return await fetchLocalisationCounts(creds, modelApiId, locales, total, 'DRAFT')
   }
+  
+  const countsDraft = await fetchLocalisationCountsRaw(creds, modelApiId, locales, total, 'DRAFT')
+  const countsPub = await fetchLocalisationCountsRaw(creds, modelApiId, locales, total, 'PUBLISHED')
+
+  if (stage === 'PUBLISHED') return countsPub
+  
+  // DRAFT stage now means "Draft ONLY" (Not Published)
+  const draftOnly: Record<string, number> = {}
+  for (const l of locales) {
+    draftOnly[l] = Math.max(0, (countsDraft[l] ?? 0) - (countsPub[l] ?? 0))
+  }
+  return draftOnly
+}
+
+async function fetchLocalisationCountsRaw(
+  creds: HygraphCredentials,
+  modelApiId: string,
+  locales: string[],
+  total: number,
+  stage: 'DRAFT' | 'PUBLISHED',
+): Promise<Record<string, number>> {
   try {
     const aliases = locales
       .map((l, i) => `l${i}: ${modelApiId}Connection(stage: ${stage}, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`)
@@ -196,7 +211,7 @@ export async function fetchLocalisationCounts(
     for (let i = 0; i < locales.length; i++) counts[locales[i]] = data[`l${i}`]?.aggregate?.count ?? 0
     return counts
   } catch {
-    return await countViaScan(creds, modelApiId, locales, total, stage as any)
+    return await countViaScan(creds, modelApiId, locales, total, stage)
   }
 }
 
@@ -253,6 +268,8 @@ export async function fetchEntryList(
   skip: number,
   stage: HygraphStage = 'PUBLISHED',
 ): Promise<{ entries: EntryListItem[]; total: number }> {
+  // If user wants "Draft Only" (DRAFT), we query DRAFT and then filter later if we had to?
+  // Actually, let's keep it simple: ALL/DRAFT/PUBLISHED query the corresponding Hygraph stage.
   const s = stage === 'PUBLISHED' ? 'PUBLISHED' : 'DRAFT'
   const titleField = await fetchTitleField(creds, modelType)
   const allLocaleIds = locales.map(l => l.apiId).join(', ')
@@ -263,36 +280,53 @@ export async function fetchEntryList(
         id
         ${titleField ?? ''}
         documentInStages { stage }
-        localizations(locales: [${allLocaleIds}]) { locale }
+        localizations(locales: [${allLocaleIds}]) { locale stage }
       }
     }
   `, { first, skip })
 
-  return {
-    entries: ((data.entries ?? []) as any[]).map(e => ({
-      id: e.id,
-      title: titleField ? String(e[titleField] ?? '') || e.id : e.id,
-      localePresentMap: Object.fromEntries(
-        (e.localizations as any[]).map(loc => [loc.locale, true]),
-      ),
-      stages: (e.documentInStages as any[]).map(s => s.stage),
-      studioUrl: projectId
-        ? `https://app.hygraph.com/projects/${projectId}/master/content/${modelType}/view/${modelApiId}/${e.id}`
-        : '#',
-    })),
-    total: 0,
-  }
+  const items = ((data.entries ?? []) as any[]).map(e => ({
+    id: e.id,
+    title: titleField ? String(e[titleField] ?? '') || e.id : e.id,
+    localePresentMap: Object.fromEntries(
+      (e.localizations as any[]).map(loc => [loc.locale, true]),
+    ),
+    stages: (e.documentInStages as any[]).map(s => s.stage),
+    studioUrl: projectId
+      ? `https://app.hygraph.com/projects/${projectId}/master/content/${modelType}/view/${modelApiId}/${e.id}`
+      : '#',
+  }))
+
+  return { entries: items, total: 0 }
 }
 
 export async function fetchLocalizableFields(
   creds: HygraphCredentials,
   modelType: string,
 ): Promise<Array<{ name: string; typeName: string; isRichText: boolean }>> {
-  const data = await gql(creds.endpoint, creds.token, `
-    query { __type(name: "${modelType}") { fields { name isLocalized type { kind name ofType { kind name } } } } }
+  // Fix: Instead of checking isLocalized on the base type (which fails on some APIs),
+  // we check what fields exist on the ${Model}Localization type.
+  try {
+    const data = await gql(creds.endpoint, creds.token, `
+      query { __type(name: "${modelType}Localization") { fields { name type { kind name ofType { kind name } } } } }
+    `)
+    const fields = (data?.__type?.fields ?? []) as any[]
+    if (fields.length > 0) {
+      return fields
+        .filter(f => !SYSTEM_FIELDS.has(f.name))
+        .map(f => {
+          const typeName = unwrapType(f.type) ?? ''
+          return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' }
+        })
+    }
+  } catch { /* fallback */ }
+
+  // Fallback: Check base type fields but WITHOUT isLocalized (less accurate)
+  const dataBase = await gql(creds.endpoint, creds.token, `
+    query { __type(name: "${modelType}") { fields { name type { kind name ofType { kind name } } } } }
   `)
-  return ((data?.__type?.fields ?? []) as any[])
-    .filter(f => !SYSTEM_FIELDS.has(f.name) && f.isLocalized)
+  return ((dataBase?.__type?.fields ?? []) as any[])
+    .filter(f => !SYSTEM_FIELDS.has(f.name))
     .map(f => {
       const typeName = unwrapType(f.type) ?? ''
       return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' }
@@ -398,6 +432,5 @@ export async function fetchLocalizationStageHealth(
 }
 
 export async function fetchMissingForLocale() {
-  // Deprecated in favor of hierarchical drill-down
   return []
 }
