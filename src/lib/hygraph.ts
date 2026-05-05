@@ -324,6 +324,7 @@ export async function fetchEntryList(
 ): Promise<{ entries: EntryListItem[]; total: number }> {
   const titleField = await fetchTitleField(creds, modelType)
   const allLocaleIds = locales.map(l => l.apiId).join(', ')
+  const projectId = extractProjectId(creds.endpoint)
   const data = await gql(creds.endpoint, creds.token, `
     query EntryList($first: Int!, $skip: Int!) {
       entries: ${modelApiId}(locales: [${defaultLocale}, ${allLocaleIds}], first: $first, skip: $skip) {
