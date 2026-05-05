@@ -45,3 +45,15 @@ export interface DrillDownData {
   missing: MissingEntry[]
   total: number
 }
+
+export interface StageHealthCount {
+  locale: string
+  published: number
+  draftOnly: number
+}
+
+export interface ModelStageHealth {
+  model: HygraphModel
+  counts: StageHealthCount[] | null
+  status: 'loading' | 'done' | 'error'
+}

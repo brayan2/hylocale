@@ -8,8 +8,8 @@ const geistSans = Geist({ variable: '--font-sans', subsets: ['latin'] })
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Hygraph Localisation Checker',
-  description: 'Find missing translations across your Hygraph project before they hit production.',
+  title: 'hylocale — Localization health for Hygraph',
+  description: 'Proactive localization health checks for Hygraph projects — coverage matrix, diagnostics, and integration setup guides.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

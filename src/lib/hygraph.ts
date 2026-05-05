@@ -241,3 +241,116 @@ export async function fetchMissingForLocale(
 function extractProjectId(endpoint: string): string {
   return endpoint.match(/\/content\/([a-zA-Z0-9]+)\//)?.[1] ?? ''
 }
+
+export async function fetchLocalizationStageHealth(
+  creds: HygraphCredentials,
+  modelApiId: string,
+  locales: string[],
+): Promise<{ locale: string; published: number; draftOnly: number }[] | null> {
+  if (!locales.length) return []
+
+  // Attempt 1: fast aggregate using stage on the connection query
+  try {
+    const aliases = locales.flatMap((l, i) => [
+      `d${i}: ${modelApiId}Connection(stage: DRAFT, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+      `p${i}: ${modelApiId}Connection(stage: PUBLISHED, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+    ]).join('\n')
+    const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
+    return locales.map((l, i) => {
+      const draft = data[`d${i}`]?.aggregate?.count ?? 0
+      const published = data[`p${i}`]?.aggregate?.count ?? 0
+      return { locale: l, published, draftOnly: Math.max(0, draft - published) }
+    })
+  } catch { /* fall through to scan */ }
+
+  // Attempt 2: scan using localizations(stages: [DRAFT, PUBLISHED]) sub-field
+  try {
+    const PAGE = 500
+    const counts: Record<string, { draft: number; published: number }> =
+      Object.fromEntries(locales.map(l => [l, { draft: 0, published: 0 }]))
+    let skip = 0
+    let hasMore = true
+
+    while (hasMore) {
+      const data = await gql(creds.endpoint, creds.token, `
+        query {
+          entries: ${modelApiId}(first: ${PAGE}, skip: ${skip}) {
+            id
+            localizations(stages: [DRAFT, PUBLISHED]) { locale stage }
+          }
+        }
+      `)
+      const entries: Array<{ id: string; localizations: Array<{ locale: string; stage: string }> }> =
+        data.entries ?? []
+
+      for (const entry of entries) {
+        for (const l of locales) {
+          const locs = entry.localizations.filter(loc => loc.locale === l)
+          if (locs.some(loc => loc.stage === 'DRAFT'))     counts[l].draft++
+          if (locs.some(loc => loc.stage === 'PUBLISHED')) counts[l].published++
+        }
+      }
+
+      hasMore = entries.length === PAGE
+      skip += PAGE
+    }
+
+    return locales.map(l => ({
+      locale: l,
+      published: counts[l].published,
+      draftOnly: Math.max(0, counts[l].draft - counts[l].published),
+    }))
+  } catch { /* fall through */ }
+
+  // Attempt 3: dual scan — stage on the outer list query (not Connection) + localizations(locales: [...])
+  // stage: DRAFT on list queries is valid in Hygraph v2; localizations sub-field inherits the stage context
+  try {
+    const localeFields = locales
+      .map((l, i) => `loc${i}: localizations(locales: [${l}]) { locale }`)
+      .join('\n')
+
+    async function scanStage(stage: 'DRAFT' | 'PUBLISHED'): Promise<Record<string, number>> {
+      const c: Record<string, number> = Object.fromEntries(locales.map(l => [l, 0]))
+      const PAGE = 500
+      let skip = 0
+      let hasMore = true
+      while (hasMore) {
+        const data = await gql(creds.endpoint, creds.token, `
+          query {
+            entries: ${modelApiId}(stage: ${stage}, first: ${PAGE}, skip: ${skip}) {
+              id
+              ${localeFields}
+            }
+          }
+        `)
+        const entries: Array<Record<string, unknown>> = data.entries ?? []
+        for (const entry of entries) {
+          for (let i = 0; i < locales.length; i++) {
+            if (((entry[`loc${i}`] as Array<unknown>) ?? []).length > 0) c[locales[i]]++
+          }
+        }
+        hasMore = entries.length === PAGE
+        skip += PAGE
+      }
+      return c
+    }
+
+    const [draftCounts, publishedCounts] = await Promise.all([
+      scanStage('DRAFT'),
+      scanStage('PUBLISHED'),
+    ])
+
+    // If counts are identical, localizations sub-field doesn't inherit stage context —
+    // this approach can't distinguish draft-only from published; signal unsupported
+    const hasDiff = locales.some(l => (draftCounts[l] ?? 0) !== (publishedCounts[l] ?? 0))
+    if (!hasDiff && locales.some(l => (publishedCounts[l] ?? 0) > 0)) return null
+
+    return locales.map(l => ({
+      locale: l,
+      published: publishedCounts[l] ?? 0,
+      draftOnly: Math.max(0, (draftCounts[l] ?? 0) - (publishedCounts[l] ?? 0)),
+    }))
+  } catch {
+    return null
+  }
+}
