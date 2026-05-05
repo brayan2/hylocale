@@ -130,7 +130,7 @@ export async function fetchTotalCount(
   defaultLocale: string,
 ): Promise<number> {
   const data = await gql(creds.endpoint, creds.token, `
-    query { result: ${modelApiId}Connection(locales: [${defaultLocale}]) { aggregate { count } } }
+    query { result: ${modelApiId}Connection { aggregate { count } } }
   `)
   return data.result?.aggregate?.count ?? 0
 }
@@ -155,7 +155,7 @@ async function countViaWhere(
 ): Promise<Record<string, number>> {
   const aliases = locales
     .map(
-      l => `${l}: ${modelApiId}Connection(where: { localizations_some: { locale: ${l} } }) {
+      (l, i) => `l${i}: ${modelApiId}Connection(where: { localizations_some: { locale: ${l} } }) {
         aggregate { count }
       }`,
     )
@@ -163,7 +163,7 @@ async function countViaWhere(
 
   const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
   const counts: Record<string, number> = {}
-  for (const l of locales) counts[l] = data[l]?.aggregate?.count ?? 0
+  for (let i = 0; i < locales.length; i++) counts[locales[i]] = data[`l${i}`]?.aggregate?.count ?? 0
   return counts
 }
 
@@ -287,7 +287,7 @@ export async function fetchEntryList(
         ${titleField ?? ''}
         localizations(locales: [${allLocaleIds}]) { locale }
       }
-      total: ${modelApiId}Connection(locales: [${defaultLocale}]) { aggregate { count } }
+      total: ${modelApiId}Connection { aggregate { count } }
     }
   `)
 
@@ -422,8 +422,8 @@ export async function fetchLocalizationStageHealth(
 
   try {
     const aliases = locales.flatMap((l, i) => [
-      `d${i}: ${modelApiId}Connection(stage: DRAFT, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
-      `p${i}: ${modelApiId}Connection(stage: PUBLISHED, where: { localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+      `d${i}: ${modelApiId}Connection(where: { stage: DRAFT, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
+      `p${i}: ${modelApiId}Connection(where: { stage: PUBLISHED, localizations_some: { locale: ${l} } }) { aggregate { count } }`,
     ]).join('\n')
     const data = await gql(creds.endpoint, creds.token, `query { ${aliases} }`)
     return locales.map((l, i) => {
