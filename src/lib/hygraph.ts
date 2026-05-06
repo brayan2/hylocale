@@ -44,6 +44,12 @@ function unwrapType(ref: { kind: string; name?: string; ofType?: unknown }): str
   return null
 }
 
+function unwrapKind(ref: { kind: string; ofType?: unknown }): string {
+  if (!ref) return 'SCALAR'
+  if (ref.ofType) return unwrapKind(ref.ofType as typeof ref)
+  return ref.kind
+}
+
 function extractProjectId(endpoint: string): string {
   return endpoint.match(/\/content\/([a-zA-Z0-9]+)\//)?.[1] ?? ''
 }
@@ -332,9 +338,10 @@ export async function fetchLocalizableFields(
 ): Promise<Array<{ name: string; typeName: string; isRichText: boolean }>> {
   // Fix: Instead of checking isLocalized on the base type (which fails on some APIs),
   // we check what fields exist on the ${Model}Localization type.
+  const typeFragment = `type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }`
   try {
     const data = await gql(creds.endpoint, creds.token, `
-      query { __type(name: "${modelType}Localization") { fields { name type { kind name ofType { kind name } } } } }
+      query { __type(name: "${modelType}Localization") { fields { name ${typeFragment} } } }
     `)
     const fields = (data?.__type?.fields ?? []) as any[]
     if (fields.length > 0) {
@@ -342,10 +349,11 @@ export async function fetchLocalizableFields(
         .filter(f => !SYSTEM_FIELDS.has(f.name))
         .map(f => {
           const typeName = unwrapType(f.type) ?? ''
+          const typeKind = unwrapKind(f.type)
           return {
             name: f.name,
             typeName,
-            isRichText: typeName === 'RichText' || typeName === 'Json' || f.type.kind === 'OBJECT' || f.type.kind === 'LIST',
+            isRichText: typeName === 'RichText' || typeName === 'Json' || typeKind === 'OBJECT' || typeKind === 'LIST',
           }
         })
     }
@@ -353,13 +361,14 @@ export async function fetchLocalizableFields(
 
   // Fallback: Check base type fields but WITHOUT isLocalized (less accurate)
   const dataBase = await gql(creds.endpoint, creds.token, `
-    query { __type(name: "${modelType}") { fields { name type { kind name ofType { kind name } } } } }
+    query { __type(name: "${modelType}") { fields { name ${typeFragment} } } }
   `)
   return ((dataBase?.__type?.fields ?? []) as any[])
     .filter(f => !SYSTEM_FIELDS.has(f.name))
     .map(f => {
       const typeName = unwrapType(f.type) ?? ''
-      return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' }
+      const typeKind = unwrapKind(f.type)
+      return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' || typeKind === 'OBJECT' || typeKind === 'LIST' }
     })
 }
 
