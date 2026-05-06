@@ -343,33 +343,19 @@ export async function fetchLocalizableFields(
     const data = await gql(creds.endpoint, creds.token, `
       query { __type(name: "${modelType}Localization") { fields { name ${typeFragment} } } }
     `)
-    const fields = (data?.__type?.fields ?? []) as any[]
-    if (fields.length > 0) {
-      return fields
-        .filter(f => !SYSTEM_FIELDS.has(f.name))
-        .map(f => {
-          const typeName = unwrapType(f.type) ?? ''
-          const typeKind = unwrapKind(f.type)
-          return {
-            name: f.name,
-            typeName,
-            isRichText: typeName === 'RichText' || typeName === 'Json' || typeKind === 'OBJECT' || typeKind === 'LIST',
-          }
-        })
-    }
-  } catch { /* fallback */ }
-
-  // Fallback: Check base type fields but WITHOUT isLocalized (less accurate)
-  const dataBase = await gql(creds.endpoint, creds.token, `
-    query { __type(name: "${modelType}") { fields { name ${typeFragment} } } }
-  `)
-  return ((dataBase?.__type?.fields ?? []) as any[])
-    .filter(f => !SYSTEM_FIELDS.has(f.name))
-    .map(f => {
-      const typeName = unwrapType(f.type) ?? ''
-      const typeKind = unwrapKind(f.type)
-      return { name: f.name, typeName, isRichText: typeName === 'RichText' || typeName === 'Json' || typeKind === 'OBJECT' || typeKind === 'LIST' }
-    })
+    return ((data?.__type?.fields ?? []) as any[])
+      .filter(f => !SYSTEM_FIELDS.has(f.name))
+      .map(f => {
+        const typeName = unwrapType(f.type) ?? ''
+        const typeKind = unwrapKind(f.type)
+        return {
+          name: f.name,
+          typeName,
+          isRichText: typeName === 'RichText' || typeName === 'Json' || typeKind === 'OBJECT' || typeKind === 'LIST',
+        }
+      })
+  } catch { /* ignore */ }
+  return []
 }
 
 export async function fetchEntryFieldCoverage(
@@ -388,15 +374,11 @@ export async function fetchEntryFieldCoverage(
   ])
 
   const isSameLocale = defaultLocale === targetLocale
-  const localesToFetch = isSameLocale ? [defaultLocale] : [defaultLocale, targetLocale]
   const fieldSelections = localizableFields
     .map(f => {
       if (f.isRichText) {
-        // Handle RichText, Json, and other composite objects
-        // We select common fields or just check existence via a simple property
         if (f.typeName === 'RichText') return `${f.name} { text html json }`
         if (f.typeName === 'Json') return f.name
-        // For Components/References, use __typename which is valid on all object types
         return `${f.name} { __typename }`
       }
       return f.name
@@ -405,15 +387,18 @@ export async function fetchEntryFieldCoverage(
 
   let entry: Record<string, unknown> | null = null
   if (localizableFields.length > 0) {
+    // Default locale values live at the root of the entry (not inside localizations).
+    // Target locale values are fetched via localizations when it differs from the default.
     const data = await gql(creds.endpoint, creds.token, `
       query EntryFields($id: ID!) {
-        entries: ${modelApiId}(stage: ${s}, locales: [${localesToFetch.join(', ')}], where: { id: $id }) {
+        entries: ${modelApiId}(stage: ${s}, locales: [${defaultLocale}], where: { id: $id }) {
           id
           ${titleField ?? ''}
-          localizations(locales: [${localesToFetch.join(', ')}]) {
+          ${fieldSelections}
+          ${!isSameLocale ? `localizations(locales: [${targetLocale}]) {
             locale
             ${fieldSelections}
-          }
+          }` : ''}
         }
       }
     `, { id: entryId })
@@ -428,19 +413,18 @@ export async function fetchEntryFieldCoverage(
       const obj = v as any
       if (obj.text || obj.html || obj.json) return obj.text || obj.html || (obj.json ? JSON.stringify(obj.json) : null)
       if (obj.id || obj.url) return obj.id || obj.url
-      // If it's a non-empty object but we don't know the fields, just return a marker
       return Object.keys(obj).length > 0 ? '[Complex Content]' : null
     }
     const s = String(v)
     return s === '' ? null : s
   }
 
-  const locs = (entry.localizations as any[]) ?? []
-  const defaultLoc = locs.find(l => l.locale === defaultLocale) ?? {}
-  const targetLoc = locs.find(l => l.locale === targetLocale) ?? null
+  const targetLoc = isSameLocale
+    ? entry
+    : ((entry.localizations as any[]) ?? []).find((l: any) => l.locale === targetLocale) ?? null
 
   const fields: FieldCoverageItem[] = localizableFields.map(f => {
-    const defaultValue = stringify(defaultLoc[f.name])
+    const defaultValue = stringify(entry![f.name])
     const targetValue = targetLoc ? stringify(targetLoc[f.name]) : null
     return {
       name: f.name,
